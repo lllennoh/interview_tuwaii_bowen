@@ -1,0 +1,130 @@
+```{r setup, include=FALSE}
+# slides: https://docs.google.com/presentation/d/1CuCeNk0ik4S4n3B8fBYy08y5c5rjRhnWK0UC4tnik-Y/edit?usp=sharing
+
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+
+library(flexdashboard)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggrepel)
+library(Hmisc)
+library(lubridate)
+library(plotly)
+library(readr)
+library(shiny)
+library(knitr)
+library(kableExtra)
+```
+```{r read_file}
+dt_login = read.csv("createrole_login_record.csv")
+dt_payment = read.csv("user_payment_record.csv")
+dt_engagment = read.csv("user_daily_session_length_record.csv")
+```
+```{r data_processing}
+# 转换 df_login 中的时间戳列
+dt_login$time <- as.POSIXct(dt_login$time / 1000, origin = "1970-01-01", tz = "UTC")
+dt_payment$time <- as.POSIXct(dt_payment$time / 1000, origin = "1970-01-01", tz = "UTC")
+```
+```{r basic_metrics}
+dt_login$dt <- as.Date(dt_login$dt)
+
+dt_login_filtered <- dt_login %>% 
+  filter(type == "g_login")
+
+dau_per_server <- dt_login_filtered %>%
+  group_by(dt, server_id) %>%
+  summarise(
+    dau = n_distinct(ctwid) # 计算唯一用户数
+  ) %>%
+  ungroup()
+
+server_launch_dates <- dau_per_server %>%
+  group_by(server_id) %>%
+  summarise(
+    launch_date = min(dt) 
+  )
+
+dau_per_server <- dau_per_server %>%
+  left_join(server_launch_dates, by = "server_id")
+
+cumulative_dau <- dau_per_server %>%
+  group_by(server_id) %>%
+  arrange(dt) %>% # 按日期排序
+  mutate(
+    cumulative_dau = cumsum(dau) ,
+    dsl = as.numeric(as.Date(dt) - as.Date(launch_date))
+  ) %>%
+  ungroup()
+
+cumulative_dau %>% 
+  ggplot(aes(x = dsl, y = cumulative_dau, group = server_id, color = as.factor(server_id))) +
+  labs(x = "dsl", 
+       y = "dau", 
+       title= "DAU by DSL per Server",
+       color = "server") + 
+  geom_line(alpha = 0.7, linewidth = 1) +
+  scale_y_continuous(limits = c(0, NA)) +
+  theme(legend.position = "none")
+```
+```{r Engagemnet}
+# Engagement
+dt_user <- dt_login %>% filter(type == "g_login") %>% select(ctwid,server_id) %>% unique()
+dt_engagment_agg <- dt_engagment %>% left_join(dt_user, by = c("ctwid")) %>% filter(!is.na(server_id))
+dt_engagment_agg$dt <- as.Date(dt_engagment_agg$dt)
+
+dt_dailyplaytime <- 
+  dt_engagment_agg %>% 
+  group_by(dt,ctwid,server_id) %>% 
+  summarise(session_time = sum(session_length),.groups = "drop")  %>% 
+  group_by(dt,server_id) %>% 
+  summarise(session_length_avg = mean(session_time)/60, .groups = "drop")
+
+server_launch_date <- dau_per_server %>% select(server_id,launch_date)  %>% unique()
+
+
+dt_dailyplaytime %>%
+  left_join(server_launch_date, by = c("server_id")) %>% 
+  mutate(
+    dsl = as.numeric(as.Date(dt) - as.Date(launch_date))
+  ) %>%
+  filter(dsl >= 0) %>% 
+  ungroup() %>%
+  filter(session_length_avg < 300) %>% 
+  ggplot(aes(x = dsl, y = session_length_avg, group = server_id, color = as.factor(server_id))) +
+  labs(x = "dsl", 
+       y = "playtime[min]", 
+       title= "Daily Playtime by dsl per server",
+       color = "server") + 
+  geom_line(alpha = 0.7, linewidth = 1) +
+  scale_y_continuous(limits = c(0, NA)) + 
+  theme(legend.position = "none")
+```
+```{r retention}
+dt_login_only <- dt_login %>% filter(type == "g_login") %>% 
+  select(dt,ctwid,server_id) %>% distinct()
+#dt_firstday <- dt_login_only %>% 
+  
+# 1D retention
+retention_rate <- dt_login_only %>%
+  group_by(server_id) %>%
+
+  arrange(server_id, dt) %>%
+  summarise(
+    first_day_users = list(unique(ctwid[dt == min(dt)])), 
+    second_day_users = list(unique(ctwid[dt == (min(dt) + 1)]))
+  ) %>%
+  rowwise() %>%
+  
+  mutate(
+    retained_users = length(intersect(first_day_users[[1]], second_day_users[[1]])),
+    total_first_day_users = length(first_day_users[[1]]),
+    retention_rate = ifelse(total_first_day_users > 0, retained_users / total_first_day_users, NA)
+  ) %>%
+  ungroup() %>%
+  select(server_id, total_first_day_users, retained_users, retention_rate)
+
+
+head(retention_rate)
+```
+}
