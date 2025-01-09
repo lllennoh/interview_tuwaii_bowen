@@ -57,13 +57,19 @@ cumulative_dau <- dau_per_server %>%
   ) %>%
   ungroup()
 
+median_dpt_dau <- cumulative_dau %>%
+  group_by(dsl) %>%
+  summarise(median_dau = median(cumulative_dau, na.rm = TRUE),server_id = "avg")
+
 cumulative_dau %>% 
   ggplot(aes(x = dsl, y = cumulative_dau, group = server_id, color = as.factor(server_id))) +
+  geom_line(alpha = 0.7, linewidth = 1) +
+  geom_line(data = median_dpt_dau, aes(x = dsl, y = median_dau), color = "black", linewidth = 1.2, linetype = "dashed") +
   labs(x = "dsl", 
        y = "dau", 
        title= "DAU by DSL per Server",
        color = "server") + 
-  geom_line(alpha = 0.7, linewidth = 1) +
+  
   scale_y_continuous(limits = c(0, NA)) +
   theme(legend.position = "none")
 ```
@@ -83,48 +89,218 @@ dt_dailyplaytime <-
 server_launch_date <- dau_per_server %>% select(server_id,launch_date)  %>% unique()
 
 
-dt_dailyplaytime %>%
+dt_dailyplaytime_plot <- dt_dailyplaytime%>%
   left_join(server_launch_date, by = c("server_id")) %>% 
   mutate(
     dsl = as.numeric(as.Date(dt) - as.Date(launch_date))
   ) %>%
   filter(dsl >= 0) %>% 
   ungroup() %>%
-  filter(session_length_avg < 300) %>% 
+  filter(session_length_avg < 300) 
+
+median_dpt <- dt_dailyplaytime_plot %>%
+  group_by(dsl) %>%
+  summarise(median_dpt = median(session_length_avg, na.rm = TRUE),server_id = "avg")
+
+dt_dailyplaytime_plot %>% 
   ggplot(aes(x = dsl, y = session_length_avg, group = server_id, color = as.factor(server_id))) +
+  geom_line(alpha = 0.7, linewidth = 1) +
+  geom_line(data = median_dpt, aes(x = dsl, y = median_dpt), color = "black", linewidth = 1.2, linetype = "dashed") +
   labs(x = "dsl", 
        y = "playtime[min]", 
        title= "Daily Playtime by dsl per server",
        color = "server") + 
-  geom_line(alpha = 0.7, linewidth = 1) +
+  
   scale_y_continuous(limits = c(0, NA)) + 
   theme(legend.position = "none")
 ```
-```{r retention}
-dt_login_only <- dt_login %>% filter(type == "g_login") %>% 
-  select(dt,ctwid,server_id) %>% distinct()
-#dt_firstday <- dt_login_only %>% 
-  
-# 1D retention
-retention_rate <- dt_login_only %>%
-  group_by(server_id) %>%
-
-  arrange(server_id, dt) %>%
-  summarise(
-    first_day_users = list(unique(ctwid[dt == min(dt)])), 
-    second_day_users = list(unique(ctwid[dt == (min(dt) + 1)]))
-  ) %>%
-  rowwise() %>%
-  
+```{r revenuePerAU}
+dt_payment$date <- as.Date(dt_payment$date)
+dt_payment_agg <- dt_payment %>% 
+  group_by(date,server_id) %>%
+  summarise(revenue = sum(pay_amt),paidau = n_distinct(ctwid)) %>%
+  left_join(server_launch_date, by = c("server_id")) %>% 
   mutate(
-    retained_users = length(intersect(first_day_users[[1]], second_day_users[[1]])),
-    total_first_day_users = length(first_day_users[[1]]),
-    retention_rate = ifelse(total_first_day_users > 0, retained_users / total_first_day_users, NA)
+    dsl = as.numeric(as.Date(date) - as.Date(launch_date))
   ) %>%
-  ungroup() %>%
-  select(server_id, total_first_day_users, retained_users, retention_rate)
+  filter(dsl >= 0) %>% 
+  ungroup()
+
+median_revenue <- dt_payment_agg %>%
+  group_by(dsl) %>%
+  summarise(median_revenue = median(revenue, na.rm = TRUE),server_id = "avg")
+
+dt_payment_agg %>%
+  ggplot(aes(x = dsl, y = revenue, group = server_id, color = as.factor(server_id))) +
+  geom_line(alpha = 0.7, linewidth = 1) +
+  geom_line(data = median_revenue, aes(x = dsl, y = median_revenue), color = "black", linewidth = 1.2, linetype = "dashed") +
+  labs(x = "dsl", 
+       y = "Pay Amount", 
+       title= "Pay Amount by dsl per server",
+       color = "server") + 
+  #geom_line(alpha = 0.7, linewidth = 1) +
+  scale_y_continuous(limits = c(0, NA)) + 
+  theme(legend.position = "none")
+
+dt_dau_per_server <- dt_login_only %>% group_by(dt,server_id) %>% summarise(dau = n_distinct(ctwid),.groups = "drop")
+dt_dau_per_server$date = dt_dau_per_server$dt
+
+dt_payment_agg <- dt_payment_agg %>% 
+  left_join(dt_dau_per_server, by = c("date","server_id") ) %>% 
+  mutate(arpu = revenue / dau)
+
+median_arpu <- dt_payment_agg %>%
+  group_by(dsl) %>%
+  summarise(median_arpu = median(arpu, na.rm = TRUE),server_id = "avg")
 
 
-head(retention_rate)
+dt_payment_agg %>% 
+  ggplot(aes(x = dsl, y = arpu, group = server_id, color = as.factor(server_id))) +
+  labs(x = "dsl", 
+       y = "ARPU", 
+       title= "Avg. Pay Amount per User by dsl per server",
+       color = "server") + 
+  geom_line(alpha = 0.7, linewidth = 1) +
+  geom_line(data = median_arpu, aes(x = dsl, y = median_arpu), color = "black", linewidth = 1.2, linetype = "dashed") +
+  
+  scale_y_continuous(limits = c(0, NA)) + 
+  theme(legend.position = "none")
+
+
 ```
+```{r AU_retention}
+
+first_login <- dt_login_only %>%
+  group_by(server_id, ctwid) %>%
+  summarise(first_login_date = min(dt), .groups = "drop")
+
+dt_with_first_login <- dt_login_only %>%
+  inner_join(first_login, by = c("server_id", "ctwid"))
+
+retention_rates <- dt_with_first_login %>%
+  mutate(days_since_first_login = as.numeric(dt - first_login_date)) %>% 
+  filter(days_since_first_login %in% c(0, 1, 3, 7)) %>% 
+  group_by(dt, server_id, first_login_date, days_since_first_login) %>%
+  summarise(
+    active_users = n_distinct(ctwid), 
+    .groups = "drop"
+  ) %>%
+  group_by(server_id, first_login_date) %>%
+  mutate(
+    retention_rate = active_users / active_users[days_since_first_login == 0]
+  ) %>%
+  filter(days_since_first_login != 0) %>% 
+  ungroup()
+
+head(retention_rates)
+
+```
+```{r PAU_retention}
+
+filtered_dt_login <- dt_login_only %>%
+  filter(ctwid %in% dt_payment$ctwid)
+
+first_login_pau <- filtered_dt_login %>%
+  group_by(server_id, ctwid) %>%
+  summarise(first_login_date = min(dt), .groups = "drop")
+
+dt_with_first_login_pau <- filtered_dt_login %>%
+  inner_join(first_login_pau, by = c("server_id", "ctwid"))
+
+retention_rates_pau <- dt_with_first_login_pau %>%
+  mutate(days_since_first_login = as.numeric(dt - first_login_date)) %>% 
+  filter(days_since_first_login %in% c(0, 1, 3, 7)) %>% 
+  group_by(dt, server_id, first_login_date, days_since_first_login) %>%
+  summarise(
+    active_users = n_distinct(ctwid), 
+    .groups = "drop"
+  ) %>%
+  group_by(server_id, first_login_date) %>%
+  mutate(
+    retention_rate = active_users / active_users[days_since_first_login == 0]
+  ) %>%
+  filter(days_since_first_login != 0) %>% 
+  ungroup()
+
+retention_rates_pau %>% head()
+
+```
+```{r Score}
+dt_score <- dt_payment_agg %>% filter(dsl < 3) %>% 
+  group_by(server_id) %>% 
+  summarise(revenue = mean(revenue),arpu = mean(arpu),.groups = "drop") %>%
+  left_join(
+    dt_payment_agg %>% filter(dsl < 3) %>% 
+    mutate(pau_perc = paidau/dau) %>%
+    group_by(server_id) %>% 
+    summarise(pau_perc = mean(pau_perc),.groups = "drop"),
+    by = c("server_id")) %>%
+  left_join(
+    retention_rates %>% left_join(server_launch_date, by = c("server_id")) %>% 
+    mutate(dsl = as.numeric(as.Date(dt) - as.Date(launch_date))) %>% 
+    filter(dsl <= 3 & days_since_first_login == 1) %>% 
+    group_by(server_id) %>% 
+    summarise(retention_1 = mean(retention_rate),.groups = "drop"),
+     by = c("server_id")) %>%
+  left_join(
+    retention_rates_pau %>% left_join(server_launch_date, by = c("server_id")) %>% 
+    mutate(dsl = as.numeric(as.Date(dt) - as.Date(launch_date))) %>% 
+    filter(dsl <= 3 & days_since_first_login == 3) %>% 
+    group_by(server_id) %>% 
+    summarise(retention_1_pau = mean(retention_rate),.groups = "drop"),
+     by = c("server_id")) 
+
+normalize <- function(x) {
+  (x - min(x, na.rm = TRUE)) / (max(x, na.rm = TRUE) - min(x, na.rm = TRUE))
 }
+
+dt_score_normalized <- dt_score %>%
+  mutate(across(
+    .cols = -server_id, # 除 server_id 外的列
+    .fns = normalize,   # 应用标准化函数
+    .names = "{.col}_normalized" # 新列名添加后缀
+  )) %>% select(server_id, ends_with("_normalized"))
+
+dt_score_normalized %>% group_by(server_id) %>%
+  summarise(totalscore = 
+           0.4 * revenue_normalized +
+           0.2 * arpu_normalized +
+           0.2 * pau_perc_normalized +
+           0.1 * retention_1_normalized + 
+           0.1 * retention_1_pau_normalized,
+           .groups = "drop") %>% 
+  arrange(desc(totalscore))
+
+dt_score %>% filter(server_id %in% c(1,2,5,26)) %>% colMeans(na.rm = TRUE)
+```
+
+```{r breakingPoint}
+cumulative_unique_users <- dt_login_only %>%
+  group_by(server_id, dt) %>% 
+  summarise(unique_users = n_distinct(ctwid), .groups = "drop") %>% # 计算每日去重用户数
+  group_by(server_id) %>% 
+  arrange(dt) %>% # 按日期排序
+  mutate(cumulative_unique_users = cumsum(unique_users)) %>% # 累计去重用户数
+  ungroup()
+
+
+dt_bp_dpt <- dt_dailyplaytime_plot %>% select(dt,server_id,session_length_avg)
+dt_bp_ret <- retention_rates %>% filter(days_since_first_login == 3) %>% select(dt,server_id,retention_rate)
+dt_bp <- left_join(dt_bp_dpt,dt_bp_ret,by = c("dt","server_id")) %>% 
+  left_join(cumulative_unique_users, by = c("server_id","dt")) %>% 
+  filter(!is.na(retention_rate))
+
+dt_bp %>% filter(server_id %in% c(1,2,26,5,3)) %>%
+  pivot_longer(cols = c(session_length_avg,retention_rate),values_to = "value",names_to = "metric") %>%
+  ggplot(aes(x = cumulative_unique_users, y = value, group = server_id, color = as.factor(server_id))) +
+  facet_wrap(vars(metric),scales = "free",nrow = 2) + 
+  labs(x = "AU", 
+       y = "value", 
+       title= "Session Length & 3day Retention by Cummulated AU per server",
+       color = "server") + 
+  #geom_smooth(method = "loess", color = "blue", se = TRUE) +
+  geom_line(alpha = 0.7, linewidth = 1) +
+  scale_y_continuous(limits = c(0, NA)) 
+
+
+```
